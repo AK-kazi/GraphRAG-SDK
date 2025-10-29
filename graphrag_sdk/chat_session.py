@@ -2,6 +2,7 @@ import json
 import hashlib
 import time
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from falkordb import Graph
 from typing import Iterator, Optional, Dict, Tuple
@@ -14,6 +15,10 @@ from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
 CYPHER_ERROR_RES = "Sorry, I could not find the answer to your question"
 
 class ChatSession:
+    # Class-level ontology cache for all instances
+    _ontology_cache: Dict[int, str] = {}
+    _cache_lock = threading.Lock()
+    _max_ontology_cache_size = 100
     """
     Represents a chat session with a Knowledge Graph.
 
@@ -273,29 +278,54 @@ class ChatSession:
             "cypher": cypher
         }
         
-    def clean_ontology_for_prompt(self, ontology: dict) -> str:
+    def clean_ontology_for_prompt(self, ontology: Ontology) -> str:
         """
-        Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
+        Cached version of ontology cleaning that removes 'unique' and 'required' keys.
 
         Args:
-            ontology (dict): The ontology to clean and transform.
+            ontology (Ontology): The ontology to clean and transform.
 
         Returns:
             str: The cleaned ontology as a JSON string.
         """
+        cache_key = hash(str(ontology.to_json()))
+        
+        with self._cache_lock:
+            if cache_key not in self._ontology_cache:
+                self._ontology_cache[cache_key] = self._process_ontology(ontology)
+                
+                # Manage cache size
+                if len(self._ontology_cache) > self._max_ontology_cache_size:
+                    # Remove oldest entries (simple strategy - remove first 20%)
+                    keys_to_remove = list(self._ontology_cache.keys())[:self._max_ontology_cache_size // 5]
+                    for key in keys_to_remove:
+                        del self._ontology_cache[key]
+            
+            return self._ontology_cache[cache_key]
+    
+    def _process_ontology(self, ontology: Ontology) -> str:
+        """
+        Original ontology processing logic.
+
+        Args:
+            ontology (Ontology): The ontology to process.
+
+        Returns:
+            str: The processed ontology as JSON string.
+        """
         # Convert the ontology object to a JSON.
-        ontology = ontology.to_json()
+        ontology_dict = ontology.to_json()
         
         # Remove unique and required attributes from the ontology.
-        for entity in ontology["entities"]:
+        for entity in ontology_dict["entities"]:
             for attribute in entity["attributes"]:
                 del attribute['unique']
                 del attribute['required']
         
-        for relation in ontology["relations"]:
+        for relation in ontology_dict["relations"]:
             for attribute in relation["attributes"]:
                 del attribute['unique']
                 del attribute['required']
         
         # Return the transformed ontology as a JSON string
-        return json.dumps(ontology)
+        return json.dumps(ontology_dict)

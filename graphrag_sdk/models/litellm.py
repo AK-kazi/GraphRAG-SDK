@@ -160,10 +160,10 @@ class LiteModelChatSession(GenerativeModelChatSession):
 
     def __init__(self, model: LiteModel, system_instruction: Optional[str] = None):
         """
-        Initialize the chat session and set up the conversation history.
+        Initialize chat session and set up conversation history.
 
         Args:
-            model (OllamaGenerativeModel): The model instance for the session.
+            model (OllamaGenerativeModel): The model instance for session.
             system_instruction (Optional[str]): Optional system instruction
         """
         self._model = model
@@ -172,10 +172,52 @@ class LiteModelChatSession(GenerativeModelChatSession):
             if system_instruction is not None
             else []
         )
+        
+        # Chat history optimization settings
+        self._max_history_length = 20
+        self._compression_threshold = 10
+        self._enable_summarization = True
+
+    def _compress_history_if_needed(self):
+        """Compress chat history to reduce token usage"""
+        if len(self._chat_history) > self._compression_threshold:
+            # Keep system message and last N messages
+            system_msgs = [msg for msg in self._chat_history if msg["role"] == "system"]
+            recent_msgs = self._chat_history[-self._max_history_length:]
+            
+            # Optional: Summarize older messages
+            if len(self._chat_history) > self._max_history_length + 5 and self._enable_summarization:
+                summary = self._summarize_old_messages()
+                if summary:
+                    recent_msgs.insert(0, {"role": "system", "content": f"Previous conversation summary: {summary}"})
+            
+            self._chat_history = system_msgs + recent_msgs
+    
+    def _summarize_old_messages(self) -> Optional[str]:
+        """Summarize older messages to preserve context"""
+        old_messages = self._chat_history[1:-self._max_history_length]
+        if len(old_messages) < 4:
+            return None
+        
+        # Create summary prompt
+        summary_prompt = "Summarize this conversation in 2-3 sentences:\n"
+        for msg in old_messages:
+            summary_prompt += f"{msg['role']}: {msg['content']}\n"
+        
+        try:
+            summary_response = completion(
+                model=self._model.model,
+                messages=[{"role": "user", "content": summary_prompt}],
+                max_tokens=100,
+                **self._model.additional_params
+            )
+            return summary_response.choices[0].message.content
+        except Exception:
+            return None
 
     def send_message(self, message: str) -> GenerationResponse:
         """
-        Send a message in the chat session and receive the model's response.
+        Send a message in chat session and receive the model's response.
 
         Args:
             message (str): The message to send.
@@ -183,6 +225,7 @@ class LiteModelChatSession(GenerativeModelChatSession):
         Returns:
             GenerationResponse: The generated response.
         """
+        self._compress_history_if_needed()
         self._chat_history.append({"role": "user", "content": message})
         try:
             response = completion(
@@ -274,5 +317,13 @@ class LiteModelChatSession(GenerativeModelChatSession):
             self._chat_history = (
             [{"role": "system", "content": self._model.system_instruction}]
             if self._model.system_instruction is not None
+            else []
+        )
+    
+    def clear_history(self):
+        """Clear chat history, preserving system message if present"""
+        self._chat_history = (
+            [{"role": "system", "content": self._chat_history[0]["content"]}]
+            if self._chat_history and self._chat_history[0]["role"] == "system"
             else []
         )

@@ -118,6 +118,17 @@ class GraphQueryGenerationStep(Step):
 
                 if i == retries - 1:
                     logger.error(f"Failed after {retries} retries: {e}")
+                    raise Exception("Failed to generate Cypher query: " + str(error))
+                
+                # Calculate delay with exponential backoff and jitter
+                delay = min(
+                    self.base_delay * (2 ** i) + random.uniform(0, self.jitter_factor),
+                    self.max_delay
+                )
+                
+                logger.debug(f"Retry {i+1} after {delay:.2f}s delay")
+                time.sleep(delay)
+
         raise Exception("Failed to generate Cypher query: " + str(error))
 
     async def run_async(self, question: str, retries: Optional[int] = 10) -> tuple[Optional[str], Optional[str], Optional[int]]:
@@ -170,6 +181,14 @@ class GraphQueryGenerationStep(Step):
                 except Exception as e:
                     if i == retries - 1:
                         raise
-                    await asyncio.sleep(2 ** i)  # Exponential backoff
+                    
+                    # Calculate delay with exponential backoff and jitter
+                    delay = min(
+                        self.base_delay * (2 ** i) + random.uniform(0, self.jitter_factor),
+                        self.max_delay
+                    )
+                    
+                    logger.debug(f"Async retry {i+1} after {delay:.2f}s delay")
+                    await asyncio.sleep(delay)
         
         return await _run_with_retry()
