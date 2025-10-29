@@ -1,4 +1,8 @@
 import logging
+import time
+import random
+import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from falkordb import Graph
 from typing import Optional
 from graphrag_sdk.steps.Step import Step
@@ -50,10 +54,15 @@ class GraphQueryGenerationStep(Step):
         self.last_answer = last_answer
         self.cypher_prompt = cypher_prompt
         self.cypher_prompt_with_history = cypher_prompt_with_history
+        
+        # Retry configuration
+        self.base_delay = 0.1
+        self.max_delay = 2.0
+        self.jitter_factor = 0.1
 
     def run(self, question: str, retries: Optional[int] = 10) -> tuple[Optional[str], Optional[str], Optional[int]]:
         """
-        Run the step to generate and validate a Cypher query.
+        Run the step to generate and validate a Cypher query with enhanced retry logic.
         
         Args:
             question (str): The question being asked to generate the query.
@@ -63,6 +72,7 @@ class GraphQueryGenerationStep(Step):
             tuple[Optional[str], Optional[str], Optional[int]]: The context, the generated Cypher query and the query execution time.
         """
         cypher = ""
+        error = None
         for i in range(retries):
             try:
                 cypher_prompt = (
@@ -81,11 +91,15 @@ class GraphQueryGenerationStep(Step):
                 if not cypher or len(cypher) == 0:
                     return (None, None, None)
 
-                validation_errors = validate_cypher(cypher, self.ontology)
-                if validation_errors is not None:
-                    raise Exception("\n".join(validation_errors))
-
-                if cypher is not None:
+                # Parallel validation and execution
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    validation_future = executor.submit(validate_cypher, cypher, self.ontology)
+                    validation_errors = validation_future.result()
+                    
+                    if validation_errors:
+                        raise Exception("\n".join(validation_errors))
+                    
+                    # Execute query
                     query_result = self.graph.query(cypher)
                     result_set = query_result.result_set
                     execution_time = query_result.run_time_ms
@@ -95,9 +109,67 @@ class GraphQueryGenerationStep(Step):
                     logger.debug(f"Context characters: {len(str(context))}")
 
                     return (context, cypher, execution_time)
+                    
             except Exception as e:
                 logger.debug(f"Error: {e}")
                 error = e
-                self.chat_session.delete_last_message()
+                if hasattr(self.chat_session, 'delete_last_message'):
+                    self.chat_session.delete_last_message()
 
+                if i == retries - 1:
+                    logger.error(f"Failed after {retries} retries: {e}")
         raise Exception("Failed to generate Cypher query: " + str(error))
+
+    async def run_async(self, question: str, retries: Optional[int] = 10) -> tuple[Optional[str], Optional[str], Optional[int]]:
+        """
+        Async version of run with parallel validation.
+        
+        Args:
+            question (str): The question being asked to generate the query.
+            retries (Optional[int]): Number of retries allowed in case of errors.
+            
+        Returns:
+            tuple[Optional[str], Optional[str], Optional[int]]: The context, the generated Cypher query and the query execution time.
+        """
+        async def _run_with_retry():
+            for i in range(retries):
+                try:
+                    # Generate cypher
+                    cypher_prompt = (
+                        (self.cypher_prompt.format(question=question) 
+                        if self.last_answer is None
+                        else self.cypher_prompt_with_history.format(question=question, last_answer=self.last_answer))
+                    )
+                    
+                    # Run cypher generation in executor
+                    loop = asyncio.get_event_loop()
+                    cypher_statement_response = await loop.run_in_executor(
+                        None, self.chat_session.send_message, cypher_prompt
+                    )
+                    cypher = extract_cypher(cypher_statement_response.text)
+                    
+                    if not cypher:
+                        return (None, None, None)
+                    
+                    # Parallel validation and execution
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        validation_future = executor.submit(validate_cypher, cypher, self.ontology)
+                        validation_errors = validation_future.result()
+                        
+                        if validation_errors:
+                            raise Exception("\n".join(validation_errors))
+                        
+                        # Execute query
+                        query_result = self.graph.query(cypher)
+                        result_set = query_result.result_set
+                        execution_time = query_result.run_time_ms
+                        context = stringify_falkordb_response(result_set)
+                        
+                        return (context, cypher, execution_time)
+                        
+                except Exception as e:
+                    if i == retries - 1:
+                        raise
+                    await asyncio.sleep(2 ** i)  # Exponential backoff
+        
+        return await _run_with_retry()

@@ -1,7 +1,9 @@
 import logging
 import warnings
+import threading
+from collections import defaultdict
 from falkordb import FalkorDB
-from typing import Optional, Union
+from typing import Optional, Union, List
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.chat_session import ChatSession
@@ -78,6 +80,11 @@ class KnowledgeGraph:
         self._name = name
         self._model_config = model_config
         self.failed_documents = set([])
+        
+        # Session pooling
+        self._session_pools: defaultdict = defaultdict(list)
+        self._pool_lock = threading.Lock()
+        self._max_pool_size = 5
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -199,6 +206,51 @@ class KnowledgeGraph:
         # Nullify all attributes
         for key in self.__dict__.keys():
             setattr(self, key, None)
+
+    def get_pooled_chat_session(self) -> ChatSession:
+        """
+        Get or create a pooled chat session.
+        
+        Returns:
+            ChatSession: A chat session instance from pool or new.
+        """
+        with self._pool_lock:
+            pool_key = id(self._model_config)
+            
+            if self._session_pools[pool_key]:
+                session = self._session_pools[pool_key].pop()
+                self._reset_session_state(session)
+                return session
+                
+            return self.chat_session()
+    
+    def return_session_to_pool(self, session: ChatSession):
+        """
+        Return session to pool for reuse.
+        
+        Args:
+            session (ChatSession): The session to return to pool.
+        """
+        with self._pool_lock:
+            pool_key = id(self._model_config)
+            if len(self._session_pools[pool_key]) < self._max_pool_size:
+                self._session_pools[pool_key].append(session)
+    
+    def _reset_session_state(self, session: ChatSession):
+        """
+        Reset session state for reuse.
+        
+        Args:
+            session (ChatSession): The session to reset.
+        """
+        session.last_complete_response = {
+            "question": None, "response": None, "context": None, "cypher": None
+        }
+        # Clear chat history if needed
+        if hasattr(session, 'cypher_chat_session'):
+            session.cypher_chat_session.clear_history()
+        if hasattr(session, 'qa_chat_session'):
+            session.qa_chat_session.clear_history()
 
     def chat_session(self) -> ChatSession:
         """

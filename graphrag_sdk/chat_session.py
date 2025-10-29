@@ -1,6 +1,10 @@
 import json
+import hashlib
+import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from falkordb import Graph
-from typing import Iterator
+from typing import Iterator, Optional, Dict, Tuple
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.steps.qa_step import QAStep
 from graphrag_sdk.steps.stream_qa_step import StreamingQAStep
@@ -50,6 +54,14 @@ class ChatSession:
         self.graph = graph
         self.ontology = ontology
         
+        # Query result caching
+        self._query_cache: Dict[str, Tuple[str, float]] = {}
+        self._cache_ttl = 3600  # 1 hour cache duration
+        self._max_cache_size = 1000
+        
+        # Parallel execution
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        
         # Filter the ontology to remove unique and required attributes that are not needed for Q&A. 
         ontology_prompt = self.clean_ontology_for_prompt(ontology)
                 
@@ -75,6 +87,70 @@ class ChatSession:
         # Metadata to store additional information about the chat session (currently only last query execution time)
         self.metadata = {"last_query_execution_time": None}
         
+    def _get_cache_key(self, message: str, cypher: str) -> str:
+        """Generate MD5 hash cache key from message and cypher"""
+        content = f"{message}:{cypher}"
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_cache_valid(self, timestamp: float) -> bool:
+        """Check if cache entry is within TTL"""
+        return time.time() - timestamp < self._cache_ttl
+    
+    def _get_cached_response(self, message: str, cypher: str) -> Optional[str]:
+        """Retrieve cached response if valid"""
+        cache_key = self._get_cache_key(message, cypher)
+        if cache_key in self._query_cache:
+            response, timestamp = self._query_cache[cache_key]
+            if self._is_cache_valid(timestamp):
+                return response
+            else:
+                del self._query_cache[cache_key]
+        return None
+    
+    def _cache_response(self, message: str, cypher: str, response: str):
+        """Cache the response with timestamp"""
+        cache_key = self._get_cache_key(message, cypher)
+        
+        # Remove oldest entries if cache is full
+        if len(self._query_cache) >= self._max_cache_size:
+            oldest_key = min(self._query_cache.keys(), 
+                           key=lambda k: self._query_cache[k][1])
+            del self._query_cache[oldest_key]
+        
+        self._query_cache[cache_key] = (response, time.time())
+
+    async def send_message_async(self, message: str) -> dict:
+        """
+        Async version of send_message.
+        
+        Args:
+            message (str): The message to send.
+            
+        Returns:
+            dict: The response dictionary.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_message, message)
+    
+    def _generate_cypher_optimized(self, message: str) -> tuple:
+        """
+        Optimized cypher generation with parallel validation.
+        
+        Args:
+            message (str): The message to generate cypher for.
+            
+        Returns:
+            tuple: A tuple containing (context, cypher)
+        """
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit cypher generation
+            cypher_future = executor.submit(self._generate_cypher_query, message)
+            
+            # Wait for cypher generation
+            context, cypher = cypher_future.result()
+            
+            return (context, cypher)
+
     def _generate_cypher_query(self, message: str) -> tuple:
         """
         Generate a Cypher query for the given message.
@@ -125,12 +201,26 @@ class ChatSession:
             }
             return self.last_complete_response
         
+        # Check cache for existing response
+        cached_answer = self._get_cached_response(message, cypher)
+        if cached_answer:
+            self.last_complete_response = {
+                "question": message, 
+                "response": cached_answer, 
+                "context": context, 
+                "cypher": cypher
+            }
+            return self.last_complete_response
+        
         qa_step = QAStep(
             chat_session=self.qa_chat_session,
             qa_prompt=self.qa_prompt,
         )
 
         answer = qa_step.run(message, cypher, context)
+        
+        # Cache the response
+        self._cache_response(message, cypher, answer)
 
         self.last_complete_response = {
             "question": message, 
