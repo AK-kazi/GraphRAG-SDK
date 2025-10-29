@@ -20,6 +20,7 @@ requests = "^2.32.3"
 ratelimit = "^2.2.1"
 python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
+json-repair = "^0.28.0"
 rich = "^13.9.4"
 litellm = "^1.73.1"
 

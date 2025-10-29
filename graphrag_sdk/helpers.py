@@ -1,11 +1,55 @@
 import re
 import logging
+import json
 from graphrag_sdk import Ontology
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 from fix_busted_json import repair_json
+
+try:
+    from json_repair import repair_json as json_repair_repair
+    JSON_REPAIR_AVAILABLE = True
+except ImportError:
+    JSON_REPAIR_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("json_repair library not available. Install with: pip install json-repair")
 
 
 logger = logging.getLogger(__name__)
+
+def validate_json_with_details(json_text: str) -> Tuple[bool, Optional[str], Optional[int]]:
+    """
+    Validates JSON and provides detailed error information.
+    
+    Args:
+        json_text (str): The JSON string to validate.
+        
+    Returns:
+        Tuple[bool, Optional[str], Optional[int]]: A tuple containing:
+            - bool: True if valid, False otherwise
+            - Optional[str]: Error message if invalid, None otherwise
+            - Optional[int]: Line number where error occurred if available, None otherwise
+    """
+    try:
+        json.loads(json_text)
+        return True, None, None
+    except json.JSONDecodeError as e:
+        # Extract line number from error message if available
+        error_msg = str(e)
+        line_num = None
+        if "line" in error_msg.lower():
+            try:
+                # Extract line number from error message like "Expecting ':' delimiter: line 1 column 123"
+                import re
+                match = re.search(r'line (\d+)', error_msg.lower())
+                if match:
+                    line_num = int(match.group(1))
+            except (ValueError, AttributeError):
+                pass
+        
+        return False, error_msg, line_num
+    except Exception as e:
+        return False, str(e), None
+
 
 def extract_json(text: Union[str, dict], skip_repair: Optional[bool] = False) -> str:
     """
@@ -22,12 +66,86 @@ def extract_json(text: Union[str, dict], skip_repair: Optional[bool] = False) ->
         text = str(text)
     regex = r"(?:```)?(?:json)?([^`]*)(?:\\n)?(?:```)?"
     matches = re.findall(regex, text, re.DOTALL)
+    json_text = "".join(matches)
 
-    try:
-        return repair_json("".join(matches)) if not skip_repair else "".join(matches)
-    except Exception as e:
-        logger.error(f"Failed to repair JSON: {e} - {text}")
-        return "".join(matches)
+    if skip_repair:
+        return json_text
+
+    # First validate the original JSON
+    is_valid, error_msg, line_num = validate_json_with_details(json_text)
+    if is_valid:
+        return json_text
+    
+    logger.debug(f"Invalid JSON detected: {error_msg}" + (f" at line {line_num}" if line_num else ""))
+
+    # Try repair strategies in sequence
+    repair_attempts = [
+        ("fix_busted_json", lambda: repair_json(json_text)),
+    ]
+    
+    # Add json_repair if available
+    if JSON_REPAIR_AVAILABLE:
+        repair_attempts.append(("json_repair", lambda: json_repair_repair(json_text)))
+    
+    # Add our custom repair strategies
+    repair_attempts.extend([
+        ("targeted_regex", lambda: _apply_targeted_repairs(json_text)),
+        ("basic_cleanup", lambda: _basic_json_cleanup(json_text))
+    ])
+    
+    for strategy_name, repair_func in repair_attempts:
+        try:
+            repaired = repair_func()
+            # Validate the repaired JSON
+            is_valid, error_msg, line_num = validate_json_with_details(repaired)
+            if is_valid:
+                logger.debug(f"Successfully repaired JSON using {strategy_name}")
+                return repaired
+            else:
+                logger.debug(f"Repair strategy {strategy_name} produced invalid JSON: {error_msg}" + (f" at line {line_num}" if line_num else ""))
+        except Exception as e:
+            logger.debug(f"Repair strategy {strategy_name} failed: {e}")
+            continue
+    
+    # All strategies failed
+    logger.error(f"All JSON repair strategies failed. Original error: {error_msg}" + (f" at line {line_num}" if line_num else ""))
+    return json_text
+
+
+def _apply_targeted_repairs(json_text: str) -> str:
+    """Apply targeted repairs for common LLM JSON errors."""
+    # Fix missing colons after quoted keys (e.g., "label""value" -> "label": "value")
+    # This specifically targets the pattern: "key""value"
+    json_text = re.sub(r'("([^"]+)")(")', r'\1: \3', json_text)
+    
+    # Fix single quotes around keys and values
+    json_text = re.sub(r"'([^']+)':\s*'([^']*)'", r'"\1": "\2"', json_text)
+    
+    # Fix missing commas between objects
+    json_text = re.sub(r'}\s*{', '}, {', json_text)
+    
+    # Fix trailing commas
+    json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
+    
+    return json_text
+
+
+def _basic_json_cleanup(json_text: str) -> str:
+    """Basic cleanup for common JSON syntax issues."""
+    # Remove any leading/trailing non-JSON content
+    json_text = json_text.strip()
+    
+    # Ensure proper JSON structure
+    if not json_text.startswith('{') and not json_text.startswith('['):
+        # Try to find the first { or [
+        start_idx = min(
+            json_text.find('{') if '{' in json_text else len(json_text),
+            json_text.find('[') if '[' in json_text else len(json_text)
+        )
+        if start_idx < len(json_text):
+            json_text = json_text[start_idx:]
+    
+    return json_text
 
 
 def map_dict_to_cypher_properties(d: dict) -> str:

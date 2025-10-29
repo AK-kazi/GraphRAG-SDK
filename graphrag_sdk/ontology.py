@@ -396,9 +396,17 @@ The following entities do not have unique attributes:
         for entity in self.entities:
             query = entity.to_graph_query()
             logger.debug(f"Query: {query}")
-            graph.query(query)
+            try:
+                graph.query(query)
+            except Exception as e:
+                logger.error(f"Error saving entity to graph: {e}")
+                continue
 
         for relation in self.relations:
             query = relation.to_graph_query()
             logger.debug(f"Query: {query}")
-            graph.query(query)
+            try:
+                graph.query(query)
+            except Exception as e:
+                logger.error(f"Error saving relation to graph: {e}")
+                continue
