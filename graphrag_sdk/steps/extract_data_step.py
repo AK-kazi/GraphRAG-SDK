@@ -4,6 +4,7 @@ import json
 import logging
 import gc
 import psutil
+import statistics
 from tqdm import tqdm
 from uuid import uuid4
 from falkordb import Graph
@@ -42,6 +43,68 @@ class BatchOperation:
     timestamp: float
 
 @dataclass
+class IngestionOptimizationConfig:
+    """Configuration for ingestion optimizations"""
+    # Document loading
+    enable_streaming: bool = True
+    chunk_size: int = 8192
+    chunk_overlap: int = 100
+    max_concurrent_files: int = 10
+    
+    # Batch processing
+    enable_batch_operations: bool = True
+    batch_size: int = 1000
+    adaptive_batching: bool = True
+    
+    # Memory management
+    max_memory_mb: int = 2048
+    memory_check_interval: int = 10
+    enable_memory_monitoring: bool = True
+    
+    # Async operations
+    enable_async_io: bool = True
+    connection_pool_size: int = 5
+    max_concurrent_requests: int = 20
+    
+    # Performance optimization
+    enable_adaptive_processing: bool = True
+    performance_window: int = 10
+    adjustment_interval: int = 60
+    
+    @classmethod
+    def high_performance(cls) -> "IngestionOptimizationConfig":
+        """High performance configuration for powerful systems"""
+        return cls(
+            enable_streaming=True,
+            chunk_size=16384,
+            max_concurrent_files=20,
+            batch_size=5000,
+            adaptive_batching=True,
+            max_memory_mb=8192,
+            enable_async_io=True,
+            connection_pool_size=10,
+            max_concurrent_requests=50,
+            enable_adaptive_processing=True
+        )
+    
+    @classmethod
+    def resource_constrained(cls) -> "IngestionOptimizationConfig":
+        """Resource constrained configuration for limited systems"""
+        return cls(
+            enable_streaming=True,
+            chunk_size=4096,
+            max_concurrent_files=3,
+            batch_size=100,
+            adaptive_batching=False,
+            max_memory_mb=1024,
+            enable_async_io=False,
+            connection_pool_size=2,
+            max_concurrent_requests=5,
+            enable_adaptive_processing=False
+        )
+
+
+@dataclass
 class MemoryConfig:
     max_memory_mb: int = 2048
     memory_check_interval: int = 10
@@ -66,6 +129,8 @@ class ExtractDataStep(Step):
         batch_size: int = 1000,
         enable_memory_monitoring: bool = False,
         memory_config: Optional[MemoryConfig] = None,
+        optimization_config: Optional[IngestionOptimizationConfig] = None,
+        enable_optimizations: bool = True,
     ) -> None:
         """
         Initialize the ExtractDataStep.
@@ -861,3 +926,350 @@ class ExtractDataStep(Step):
             self._cache.clear()
         
         print("Emergency cleanup completed")
+
+
+@dataclass
+class PerformanceMetrics:
+    """Performance metrics for batch processing"""
+    processing_times: List[float]
+    memory_usage: List[float]
+    error_count: int
+    success_count: int
+    
+    def get_avg_processing_time(self) -> float:
+        return statistics.mean(self.processing_times) if self.processing_times else 0
+    
+    def get_avg_memory_usage(self) -> float:
+        return statistics.mean(self.memory_usage) if self.memory_usage else 0
+    
+    def get_error_rate(self) -> float:
+        total = self.error_count + self.success_count
+        return self.error_count / total if total > 0 else 0
+
+
+class IngestionMetrics:
+    """Performance monitoring for ingestion process"""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.documents_processed = 0
+        self.entities_created = 0
+        self.relations_created = 0
+        self.batches_processed = 0
+        self.errors = []
+        self.memory_snapshots = []
+        self.processing_times = []
+    
+    def record_batch_completed(self, batch_size: int, processing_time: float, memory_mb: float):
+        self.batches_processed += 1
+        self.documents_processed += batch_size
+        self.processing_times.append(processing_time)
+        self.memory_snapshots.append(memory_mb)
+    
+    def record_entities_created(self, count: int):
+        self.entities_created += count
+    
+    def record_relations_created(self, count: int):
+        self.relations_created += count
+    
+    def get_performance_summary(self) -> dict:
+        total_time = time.time() - self.start_time
+        
+        return {
+            'total_time': total_time,
+            'documents_processed': self.documents_processed,
+            'documents_per_second': self.documents_processed / total_time if total_time > 0 else 0,
+            'entities_created': self.entities_created,
+            'relations_created': self.relations_created,
+            'batches_processed': self.batches_processed,
+            'average_batch_size': self.documents_processed / self.batches_processed if self.batches_processed > 0 else 0,
+            'average_processing_time': sum(self.processing_times) / len(self.processing_times) if self.processing_times else 0,
+            'peak_memory_mb': max(self.memory_snapshots) if self.memory_snapshots else 0,
+            'error_count': len(self.errors),
+            'success_rate': (self.documents_processed - len(self.errors)) / self.documents_processed if self.documents_processed > 0 else 0
+        }
+
+
+class AdaptiveBatchProcessor:
+    """Adaptive batch processing with performance-based optimization"""
+    
+    def __init__(
+        self,
+        initial_batch_size: int = 50,
+        min_batch_size: int = 10,
+        max_batch_size: int = 500,
+        adjustment_factor: float = 0.2,
+        performance_window: int = 10
+    ):
+        self.initial_batch_size = initial_batch_size
+        self.min_batch_size = min_batch_size
+        self.max_batch_size = max_batch_size
+        self.adjustment_factor = adjustment_factor
+        self.performance_window = performance_window
+        
+        self.current_batch_size = initial_batch_size
+        self.metrics_history: List[PerformanceMetrics] = []
+        self.last_adjustment_time = time.time()
+        self.adjustment_interval = 60  # Adjust every 60 seconds
+    
+    def record_batch_performance(self, metrics: PerformanceMetrics):
+        """Record performance metrics for a batch"""
+        self.metrics_history.append(metrics)
+        
+        # Keep only recent metrics
+        if len(self.metrics_history) > self.performance_window:
+            self.metrics_history.pop(0)
+        
+        # Check if we should adjust batch size
+        if self._should_adjust():
+            self._adjust_batch_size()
+    
+    def _should_adjust(self) -> bool:
+        """Determine if batch size should be adjusted"""
+        current_time = time.time()
+        time_since_last_adjustment = current_time - self.last_adjustment_time
+        
+        return (
+            time_since_last_adjustment >= self.adjustment_interval and
+            len(self.metrics_history) >= 3
+        )
+    
+    def _adjust_batch_size(self):
+        """Adjust batch size based on performance metrics"""
+        if not self.metrics_history:
+            return
+        
+        # Calculate recent performance averages
+        recent_metrics = self.metrics_history[-3:]
+        avg_processing_time = statistics.mean([
+            m.get_avg_processing_time() for m in recent_metrics
+        ])
+        avg_memory_usage = statistics.mean([
+            m.get_avg_memory_usage() for m in recent_metrics
+        ])
+        avg_error_rate = statistics.mean([
+            m.get_error_rate() for m in recent_metrics
+        ])
+        
+        old_batch_size = self.current_batch_size
+        
+        # Adjust based on performance
+        if avg_error_rate > 0.1:  # High error rate
+            # Reduce batch size
+            self.current_batch_size = max(
+                self.min_batch_size,
+                int(self.current_batch_size * (1 - self.adjustment_factor))
+            )
+            print(f"Reduced batch size due to high error rate ({avg_error_rate:.2%})")
+            
+        elif avg_processing_time > 30.0:  # Slow processing
+            # Reduce batch size
+            self.current_batch_size = max(
+                self.min_batch_size,
+                int(self.current_batch_size * (1 - self.adjustment_factor))
+            )
+            print(f"Reduced batch size due to slow processing ({avg_processing_time:.1f}s)")
+            
+        elif avg_memory_usage > 0.8:  # High memory usage
+            # Reduce batch size
+            self.current_batch_size = max(
+                self.min_batch_size,
+                int(self.current_batch_size * (1 - self.adjustment_factor))
+            )
+            print(f"Reduced batch size due to high memory usage ({avg_memory_usage:.1%})")
+            
+        elif (avg_processing_time < 5.0 and 
+              avg_memory_usage < 0.5 and 
+              avg_error_rate < 0.05):  # Good performance
+            # Increase batch size
+            self.current_batch_size = min(
+                self.max_batch_size,
+                int(self.current_batch_size * (1 + self.adjustment_factor))
+            )
+            print(f"Increased batch size due to good performance")
+        
+        # Log adjustment
+        if old_batch_size != self.current_batch_size:
+            print(f"Batch size adjusted: {old_batch_size} → {self.current_batch_size}")
+            self.last_adjustment_time = time.time()
+    
+    def get_current_batch_size(self) -> int:
+        """Get current optimal batch size"""
+        return self.current_batch_size
+    
+    def get_optimal_workers(self, cpu_count: int, memory_gb: int) -> int:
+        """Calculate optimal number of workers based on system resources"""
+        # Base workers on CPU count
+        cpu_workers = min(cpu_count * 2, 32)
+        
+        # Limit workers based on memory (assume 1GB per worker minimum)
+        memory_workers = max(1, memory_gb)
+        
+        # Consider current batch size
+        batch_factor = min(self.current_batch_size / 100, 2.0)
+        
+        optimal_workers = min(
+            int(cpu_workers * batch_factor),
+            memory_workers,
+            16  # Hard maximum
+        )
+        
+        return max(optimal_workers, 1)
+
+
+class AdaptiveExtractDataStep(ExtractDataStep):
+    """Enhanced ExtractDataStep with adaptive processing capabilities"""
+    
+    def __init__(
+        self,
+        sources: list[AbstractSource],
+        ontology: Ontology,
+        model: GenerativeModel,
+        graph: Graph,
+        config: Optional[dict] = None,
+        hide_progress: Optional[bool] = False,
+        enable_batch_operations: bool = False,
+        batch_size: int = 1000,
+        enable_memory_monitoring: bool = False,
+        memory_config: Optional[MemoryConfig] = None,
+        adaptive_config: Optional[Dict] = None,
+        enable_adaptive_processing: bool = True,
+    ) -> None:
+        """
+        Initialize AdaptiveExtractDataStep with all optimization features
+        
+        Args:
+            adaptive_config (Optional[Dict]): Configuration for adaptive processing
+            enable_adaptive_processing (bool): Enable adaptive batch processing
+        """
+        super().__init__(
+            sources=sources,
+            ontology=ontology,
+            model=model,
+            graph=graph,
+            config=config,
+            hide_progress=hide_progress,
+            enable_batch_operations=enable_batch_operations,
+            batch_size=batch_size,
+            enable_memory_monitoring=enable_memory_monitoring,
+            memory_config=memory_config,
+        )
+        
+        self.enable_adaptive_processing = enable_adaptive_processing
+        
+        # Initialize adaptive processor
+        if enable_adaptive_processing:
+            config = adaptive_config or {}
+            self.adaptive_processor = AdaptiveBatchProcessor(
+                initial_batch_size=config.get('initial_batch_size', 50),
+                min_batch_size=config.get('min_batch_size', 10),
+                max_batch_size=config.get('max_batch_size', 500),
+                adjustment_factor=config.get('adjustment_factor', 0.2)
+            )
+            
+            # System resource detection
+            self.cpu_count = psutil.cpu_count()
+            self.memory_gb = psutil.virtual_memory().total / (1024**3)
+            
+            # Initialize metrics tracking
+            self.ingestion_metrics = IngestionMetrics()
+    
+    def run(self, instructions: Optional[str] = None):
+        """Run with adaptive batch processing"""
+        if self.enable_adaptive_processing:
+            return self._run_adaptive(instructions)
+        else:
+            return super().run(instructions)
+    
+    def _run_adaptive(self, instructions: Optional[str] = None):
+        """Run with adaptive batch processing"""
+        print(f"Starting adaptive extraction with {self.cpu_count} CPUs, {self.memory_gb:.1f} GB RAM")
+        
+        # Get optimal worker count
+        optimal_workers = self.adaptive_processor.get_optimal_workers(
+            self.cpu_count, self.memory_gb
+        )
+        print(f"Using {optimal_workers} workers")
+        
+        documents_batch = []
+        
+        with tqdm(desc="Processing Documents", disable=self.hide_progress) as pbar:
+            for document, source_instruction in self._get_documents_stream():
+                documents_batch.append((document, source_instruction))
+                
+                # Check if batch is ready
+                current_batch_size = self.adaptive_processor.get_current_batch_size()
+                if len(documents_batch) >= current_batch_size:
+                    self._process_batch_adaptive(documents_batch, instructions)
+                    documents_batch.clear()
+                    pbar.update(current_batch_size)
+            
+            # Process remaining documents
+            if documents_batch:
+                self._process_batch_adaptive(documents_batch, instructions)
+                pbar.update(len(documents_batch))
+        
+        # Flush any remaining batches
+        if self.enable_batch_operations:
+            self.flush_all_batches()
+        
+        # Print performance summary
+        if hasattr(self, 'ingestion_metrics'):
+            summary = self.ingestion_metrics.get_performance_summary()
+            print(f"Adaptive extraction completed:")
+            print(f"  Documents processed: {summary['documents_processed']}")
+            print(f"  Processing time: {summary['total_time']:.1f}s")
+            print(f"  Documents/second: {summary['documents_per_second']:.1f}")
+            print(f"  Entities created: {summary['entities_created']}")
+            print(f"  Relations created: {summary['relations_created']}")
+            print(f"  Average batch size: {summary['average_batch_size']:.1f}")
+            print(f"  Peak memory: {summary['peak_memory_mb']:.0f} MB")
+            print(f"  Success rate: {summary['success_rate']:.1%}")
+            print(f"  Final batch size: {self.adaptive_processor.get_current_batch_size()}")
+        
+        return []
+    
+    def _process_batch_adaptive(self, documents: List[tuple], instructions: Optional[str] = None):
+        """Process a batch of documents with adaptive sizing"""
+        start_time = time.time()
+        start_memory = psutil.virtual_memory().percent / 100.0
+        
+        batch_size = len(documents)
+        errors = 0
+        successes = 0
+        
+        try:
+            # Process documents in current batch
+            for document, source_instruction in documents:
+                try:
+                    self._process_document_with_memory_check(document, source_instruction, instructions)
+                    successes += 1
+                except Exception as e:
+                    errors += 1
+                    print(f"Error processing document: {e}")
+            
+            # Record performance metrics
+            end_time = time.time()
+            end_memory = psutil.virtual_memory().percent / 100.0
+            
+            processing_time = end_time - start_time
+            memory_usage = (start_memory + end_memory) / 2
+            
+            metrics = PerformanceMetrics(
+                processing_times=[processing_time / batch_size],
+                memory_usage=[memory_usage],
+                error_count=errors,
+                success_count=successes
+            )
+            
+            self.adaptive_processor.record_batch_performance(metrics)
+            
+            # Record ingestion metrics
+            if hasattr(self, 'ingestion_metrics'):
+                self.ingestion_metrics.record_batch_completed(
+                    batch_size, processing_time, memory_usage * psutil.virtual_memory().total / (1024 * 1024)
+                )
+            
+        except Exception as e:
+            print(f"Error in batch processing: {e}")
+            raise

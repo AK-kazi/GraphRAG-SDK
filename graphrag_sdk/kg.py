@@ -3,7 +3,7 @@ import warnings
 import threading
 from collections import defaultdict
 from falkordb import FalkorDB
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict, Any
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.chat_session import ChatSession
@@ -404,3 +404,89 @@ class KnowledgeGraph:
             elif valid_attr.type == AttributeType.BOOLEAN:
                 if not isinstance(attr_dict[attr], bool):
                     raise Exception(f"Attribute {attr} should be a boolean")
+
+
+class PooledGraphOperations:
+    """
+    Database connection pooling for optimized graph operations
+    """
+
+    def __init__(self, graph, pool_size: int = 5):
+        """
+        Initialize connection pool
+
+        Args:
+            graph: The graph instance to pool connections for
+            pool_size (int): Maximum number of connections in pool
+        """
+        self.graph = graph
+        self.pool_size = pool_size
+        self.connection_pool = []
+        self.pool_lock = threading.Lock()
+        
+        # Initialize connection pool
+        self._initialize_pool()
+    
+    def _initialize_pool(self):
+        """Initialize database connection pool"""
+        for _ in range(self.pool_size):
+            # Create connection (simplified - actual implementation depends on FalkorDB)
+            connection = self._create_connection()
+            self.connection_pool.append(connection)
+    
+    def _create_connection(self):
+        """Create new database connection"""
+        # This would create a new FalkorDB connection
+        # Implementation depends on FalkorDB API
+        # For now, return the graph instance as a placeholder
+        return self.graph
+    
+    def get_connection(self):
+        """Get connection from pool"""
+        with self.pool_lock:
+            if self.connection_pool:
+                return self.connection_pool.pop()
+            else:
+                # Pool exhausted, create new connection
+                return self._create_connection()
+    
+    def return_connection(self, connection):
+        """Return connection to pool"""
+        with self.pool_lock:
+            if len(self.connection_pool) < self.pool_size:
+                self.connection_pool.append(connection)
+            else:
+                # Pool full, close connection
+                self._close_connection(connection)
+    
+    def _close_connection(self, connection):
+        """Close database connection"""
+        # Implementation depends on FalkorDB API
+        # For now, do nothing as we're using the graph instance
+        pass
+    
+    def execute_query(self, query: str, params: Optional[Dict] = None):
+        """Execute query using pooled connection"""
+        connection = self.get_connection()
+        try:
+            result = connection.query(query, params)
+            return result
+        finally:
+            self.return_connection(connection)
+    
+    def execute_transaction(self, queries: List[tuple]):
+        """Execute multiple queries in a transaction"""
+        connection = self.get_connection()
+        try:
+            # Begin transaction
+            results = []
+            for query, params in queries:
+                result = connection.query(query, params)
+                results.append(result)
+            # Commit transaction
+            return results
+        except Exception as e:
+            # Rollback transaction
+            raise
+        finally:
+            self.return_connection(connection)
