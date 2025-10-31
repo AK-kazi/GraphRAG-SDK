@@ -1,0 +1,81 @@
+{
+  "use_case": "large_document_ingestion",
+  "description": "Ingestion of large documents (10000+ items)",
+  "dataset_size": 10000,
+  "metrics": [
+    {
+      "name": "ingestion_time",
+      "value": 14.238712072372437,
+      "unit": "seconds",
+      "description": "Total time to ingest all documents",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion"
+      }
+    },
+    {
+      "name": "throughput",
+      "value": 702.3107110511163,
+      "unit": "docs/second",
+      "description": "Number of documents processed per second",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion"
+      }
+    },
+    {
+      "name": "peak_memory_usage",
+      "value": 59.01222229003906,
+      "unit": "MB",
+      "description": "Peak memory usage during ingestion",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion"
+      }
+    },
+    {
+      "name": "average_cpu_usage",
+      "value": 45.0,
+      "unit": "percent",
+      "description": "Average CPU usage during ingestion",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion"
+      }
+    },
+    {
+      "name": "disk_io",
+      "value": 23.30014705657959,
+      "unit": "MB",
+      "description": "Total disk I/O during ingestion",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion"
+      }
+    },
+    {
+      "name": "average_latency",
+      "value": 1.289224624633789,
+      "unit": "milliseconds",
+      "description": "Average time to process a single document",
+      "dataset_size": 10000,
+      "test_conditions": {
+        "use_case": "large_document_ingestion",
+        "sample_size": 10
+      }
+    }
+  ],
+  "created_at": "2025-10-30T20:04:29.983336",
+  "environment_info": {
+    "python_version": "3.x",
+    "platform": "Linux/macOS/Windows",
+    "cpu_count": 4,
+    "total_memory_gb": 16,
+    "timestamp": "2025-10-30T20:04:29.983319",
+    "graphrag_sdk_version": "1.0.0"
+  },
+  "recommendations": [
+    "Low memory footprint - good for memory-constrained environments",
+    "Excellent latency - suitable for real-time applications"
+  ]
+}
